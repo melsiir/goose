@@ -57,6 +57,17 @@ jobs:
             build-on: ubuntu-latest
             use-cross: true
             cc: gcc-10
+          # Android/Termux builds
+          - os: ubuntu-latest
+            architecture: aarch64
+            target-suffix: android
+            build-on: ubuntu-latest
+            use-cross: true
+          - os: ubuntu-latest
+            architecture: armv7
+            target-suffix: androideabi
+            build-on: ubuntu-latest
+            use-cross: true
           # macOS builds
           - os: macos-latest
             architecture: x86_64
@@ -92,10 +103,27 @@ jobs:
       - name: Install prerequisites
         shell: bash
         run: |
-          case ${target} in
+          # Construct the target triple correctly for Android
+          if [[ "${{ matrix.target-suffix }}" == "android" ]]; then
+            export TARGET="${{ matrix.architecture }}-linux-${{ matrix.target-suffix }}"
+          elif [[ "${{ matrix.target-suffix }}" == "androideabi" ]]; then
+            export TARGET="${{ matrix.architecture }}-linux-${{ matrix.target-suffix }}"
+          else
+            export TARGET="${{ matrix.architecture }}-${{ matrix.target-suffix }}"
+          fi
+
+          case ${TARGET} in
             arm-unknown-linux-*) sudo apt-get -y update ; sudo apt-get -y install gcc-arm-linux-gnueabihf ;;
-            
+            aarch64-linux-android) sudo apt-get -y update ; sudo apt-get -y install gcc-aarch64-linux-android ;;
+            armv7-linux-androideabi) sudo apt-get -y update ; sudo apt-get -y install gcc-arm-linux-gnueabihf ;;
+            x86_64-linux-android) sudo apt-get -y update ; sudo apt-get -y install gcc-x86-64-linux-android ;;
           esac
+
+          # Install Android NDK dependencies if building for Android
+          if [[ "${TARGET}" == *"android"* ]]; then
+            echo "Installing Android NDK dependencies..."
+            sudo apt-get -y install android-tools-adb android-ndk
+          fi
       - name: Install cross
         if: matrix.use-cross
         run: source ./bin/activate-hermit && cargo install cross --git https://github.com/cross-rs/cross
@@ -112,7 +140,7 @@ jobs:
         with:
           key: ${{ matrix.architecture }}-${{ matrix.target-suffix }}
 
-      - name: Build CLI (Linux/macOS)
+      - name: Build CLI (Linux/macOS/Android)
         if: matrix.use-cross
         env:
           CROSS_NO_WARNINGS: 0
@@ -121,7 +149,16 @@ jobs:
           CROSS_VERBOSE: 1
         run: |
           source ./bin/activate-hermit
-          export TARGET="${{ matrix.architecture }}-${{ matrix.target-suffix }}"
+
+          # Construct the target triple correctly for Android
+          if [[ "${{ matrix.target-suffix }}" == "android" ]]; then
+            export TARGET="${{ matrix.architecture }}-linux-${{ matrix.target-suffix }}"
+          elif [[ "${{ matrix.target-suffix }}" == "androideabi" ]]; then
+            export TARGET="${{ matrix.architecture }}-linux-${{ matrix.target-suffix }}"
+          else
+            export TARGET="${{ matrix.architecture }}-${{ matrix.target-suffix }}"
+          fi
+
           rustup target add "${TARGET}"
           echo "Building for target: ${TARGET}"
           echo "Rust toolchain info:"
@@ -129,13 +166,19 @@ jobs:
           echo "Cross version:"
           cross --version
 
+          # Install additional dependencies for bindgen if needed
+          if [[ "${TARGET}" == *"android"* ]]; then
+            echo "Installing Android NDK dependencies for bindgen..."
+            rustup component add rust-src
+          fi
+
           export CC="${{ matrix.cc || ''}}"
           cross build --release --target ${TARGET} -p goose-cli
 
       - name: Build CLI (Windows)
         if: matrix.use-docker
         run: |
-          echo "🚀 Building Windows CLI executable with enhanced GitHub Actions caching..."
+          echo "ðŸš€ Building Windows CLI executable with enhanced GitHub Actions caching..."
 
           # Create cache directories
           mkdir -p ~/.cargo/registry ~/.cargo/git
@@ -155,9 +198,9 @@ jobs:
 
               # Check if Windows target is already installed in cache
               if rustup target list --installed | grep -q x86_64-pc-windows-gnu; then
-                echo '✅ Windows cross-compilation target already installed'
+                echo 'âœ… Windows cross-compilation target already installed'
               else
-                echo '📦 Installing Windows cross-compilation target...'
+                echo 'ðŸ“¦ Installing Windows cross-compilation target...'
                 rustup target add x86_64-pc-windows-gnu
               fi
 
@@ -198,14 +241,14 @@ jobs:
               echo '=== Building with cached dependencies ==='
               # Check if we have cached build artifacts
               if [ -d target/x86_64-pc-windows-gnu/release/deps ] && [ \"\$(ls -A target/x86_64-pc-windows-gnu/release/deps)\" ]; then
-                echo '✅ Found cached build artifacts, performing incremental build...'
+                echo 'âœ… Found cached build artifacts, performing incremental build...'
                 CARGO_INCREMENTAL=1
               else
-                echo '🔨 No cached artifacts found, performing full build...'
+                echo 'ðŸ”¨ No cached artifacts found, performing full build...'
                 CARGO_INCREMENTAL=0
               fi
 
-              echo '🔨 Building Windows CLI executable...'
+              echo 'ðŸ”¨ Building Windows CLI executable...'
               CARGO_INCREMENTAL=\$CARGO_INCREMENTAL \
               CARGO_NET_RETRY=3 \
               CARGO_HTTP_TIMEOUT=60 \
@@ -218,7 +261,7 @@ jobs:
               cp \"\$GCC_DIR/libgcc_s_seh-1.dll\" target/x86_64-pc-windows-gnu/release/
               cp /usr/x86_64-w64-mingw32/lib/libwinpthread-1.dll target/x86_64-pc-windows-gnu/release/
 
-              echo '✅ Build completed successfully!'
+              echo 'âœ… Build completed successfully!'
               ls -la target/x86_64-pc-windows-gnu/release/
             "
 
@@ -226,22 +269,30 @@ jobs:
 
           # Verify build succeeded
           if [ ! -f "./target/x86_64-pc-windows-gnu/release/goose.exe" ]; then
-            echo "❌ Windows CLI binary not found."
+            echo "âŒ Windows CLI binary not found."
             ls -la ./target/x86_64-pc-windows-gnu/release/ || echo "Release directory doesn't exist"
             exit 1
           fi
 
-          echo "✅ Windows CLI binary found!"
+          echo "âœ… Windows CLI binary found!"
           ls -la ./target/x86_64-pc-windows-gnu/release/goose.exe
 
-          echo "✅ Windows runtime DLLs:"
+          echo "âœ… Windows runtime DLLs:"
           ls -la ./target/x86_64-pc-windows-gnu/release/*.dll
 
-      - name: Package CLI (Linux/macOS)
+      - name: Package CLI (Linux/macOS/Android)
         if: matrix.use-cross
         run: |
           source ./bin/activate-hermit
-          export TARGET="${{ matrix.architecture }}-${{ matrix.target-suffix }}"
+
+          # Construct the target triple correctly for Android (same logic as build step)
+          if [[ "${{ matrix.target-suffix }}" == "android" ]]; then
+            export TARGET="${{ matrix.architecture }}-linux-${{ matrix.target-suffix }}"
+          elif [[ "${{ matrix.target-suffix }}" == "androideabi" ]]; then
+            export TARGET="${{ matrix.architecture }}-linux-${{ matrix.target-suffix }}"
+          else
+            export TARGET="${{ matrix.architecture }}-${{ matrix.target-suffix }}"
+          fi
 
           # Create a directory for the package contents
           mkdir -p "target/${TARGET}/release/goose-package"
