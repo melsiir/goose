@@ -278,3 +278,5 @@ jobs:
         with:
           name: goose-${{ matrix.architecture }}-${{ matrix.target-suffix }}
           path: ${{ env.ARTIFACT }}
+
+      # end
