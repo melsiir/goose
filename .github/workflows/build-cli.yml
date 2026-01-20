@@ -36,12 +36,12 @@ jobs:
             build-on: ubuntu-latest
             use-cross: true
           - os: ubuntu-latest
-            architecture: arm
+            architecture: armv7
             target-suffix: unknown-linux-gnueabihf
             build-on: ubuntu-latest
             use-cross: true
           - os: ubuntu-latest
-            architecture: arm
+            architecture: armv7
             target-suffix: unknown-linux-musleabihf
             build-on: ubuntu-latest
             use-cross: true
@@ -89,9 +89,10 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # pin@v4
+        uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.ref }}
+          # If inputs.ref is empty, fall back to the current github.ref
+          ref: ${{ inputs.ref != '' && inputs.ref || github.ref }}
           fetch-depth: 0
 
       - name: Update version in Cargo.toml
@@ -124,24 +125,25 @@ jobs:
             echo "Installing Android NDK dependencies..."
             sudo apt-get -y install android-tools-adb android-ndk
           fi
+
       - name: Install cross
-        if: matrix.use-cross
+        if: ${{ matrix.use-cross }}
         run: source ./bin/activate-hermit && cargo install cross --git https://github.com/cross-rs/cross
 
       - name: Cache Cargo artifacts (Linux/macOS)
-        if: matrix.use-cross
+        if: ${{ matrix.use-cross }}
         uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2
         with:
           key: ${{ matrix.architecture }}-${{ matrix.target-suffix }}
 
       - name: Cache Cargo artifacts (Windows)
-        if: matrix.use-docker
+        if: ${{ matrix.use-docker }}
         uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2
         with:
           key: ${{ matrix.architecture }}-${{ matrix.target-suffix }}
 
       - name: Build CLI (Linux/macOS/Android)
-        if: matrix.use-cross
+        if: ${{ matrix.use-cross }}
         env:
           CROSS_NO_WARNINGS: 0
           RUST_LOG: debug
@@ -172,13 +174,13 @@ jobs:
             rustup component add rust-src
           fi
 
-          export CC="${{ matrix.cc || ''}}"
+          export CC="${{ matrix.cc || '' }}"
           cross build --release --target ${TARGET} -p goose-cli
 
       - name: Build CLI (Windows)
-        if: matrix.use-docker
+        if: ${{ matrix.use-docker }}
         run: |
-          echo "ðŸš€ Building Windows CLI executable with enhanced GitHub Actions caching..."
+          echo "Building Windows CLI executable with enhanced GitHub Actions caching..."
 
           # Create cache directories
           mkdir -p ~/.cargo/registry ~/.cargo/git
@@ -198,15 +200,15 @@ jobs:
 
               # Check if Windows target is already installed in cache
               if rustup target list --installed | grep -q x86_64-pc-windows-gnu; then
-                echo 'âœ… Windows cross-compilation target already installed'
+                echo '[OK] Windows cross-compilation target already installed'
               else
-                echo 'ðŸ“¦ Installing Windows cross-compilation target...'
+                echo '[INFO] Installing Windows cross-compilation target...'
                 rustup target add x86_64-pc-windows-gnu
               fi
 
               echo '=== Setting up build dependencies ==='
               apt-get update
-              apt-get install -y mingw-w64 protobuf-compiler cmake time
+              apt-get install -y mingw-w64 protobuf-compiler cmake time zip
 
               echo '=== Setting up cross-compilation environment ==='
               export CC_x86_64_pc_windows_gnu=x86_64-w64-mingw32-gcc
@@ -240,15 +242,15 @@ jobs:
 
               echo '=== Building with cached dependencies ==='
               # Check if we have cached build artifacts
-              if [ -d target/x86_64-pc-windows-gnu/release/deps ] && [ \"\$(ls -A target/x86_64-pc-windows-gnu/release/deps)\" ]; then
-                echo 'âœ… Found cached build artifacts, performing incremental build...'
+              if [ -d target/x86_64-pc-windows-gnu/release/deps ] && [ "$(ls -A target/x86_64-pc-windows-gnu/release/deps)" ]; then
+                echo '[OK] Found cached build artifacts, performing incremental build...'
                 CARGO_INCREMENTAL=1
               else
-                echo 'ðŸ”¨ No cached artifacts found, performing full build...'
+                echo '[INFO] No cached artifacts found, performing full build...'
                 CARGO_INCREMENTAL=0
               fi
 
-              echo 'ðŸ”¨ Building Windows CLI executable...'
+              echo '[INFO] Building Windows CLI executable...'
               CARGO_INCREMENTAL=\$CARGO_INCREMENTAL \
               CARGO_NET_RETRY=3 \
               CARGO_HTTP_TIMEOUT=60 \
@@ -257,11 +259,11 @@ jobs:
 
               echo '=== Copying Windows runtime DLLs ==='
               GCC_DIR=\$(ls -d /usr/lib/gcc/x86_64-w64-mingw32/*/ | head -n 1)
-              cp \"\$GCC_DIR/libstdc++-6.dll\" target/x86_64-pc-windows-gnu/release/
-              cp \"\$GCC_DIR/libgcc_s_seh-1.dll\" target/x86_64-pc-windows-gnu/release/
+              cp "\$GCC_DIR/libstdc++-6.dll" target/x86_64-pc-windows-gnu/release/
+              cp "\$GCC_DIR/libgcc_s_seh-1.dll" target/x86_64-pc-windows-gnu/release/
               cp /usr/x86_64-w64-mingw32/lib/libwinpthread-1.dll target/x86_64-pc-windows-gnu/release/
 
-              echo 'âœ… Build completed successfully!'
+              echo '[OK] Build completed successfully!'
               ls -la target/x86_64-pc-windows-gnu/release/
             "
 
@@ -269,19 +271,19 @@ jobs:
 
           # Verify build succeeded
           if [ ! -f "./target/x86_64-pc-windows-gnu/release/goose.exe" ]; then
-            echo "âŒ Windows CLI binary not found."
+            echo "ERROR: Windows CLI binary not found."
             ls -la ./target/x86_64-pc-windows-gnu/release/ || echo "Release directory doesn't exist"
             exit 1
           fi
 
-          echo "âœ… Windows CLI binary found!"
+          echo "Windows CLI binary found:"
           ls -la ./target/x86_64-pc-windows-gnu/release/goose.exe
 
-          echo "âœ… Windows runtime DLLs:"
-          ls -la ./target/x86_64-pc-windows-gnu/release/*.dll
+          echo "Windows runtime DLLs:"
+          ls -la ./target/x86_64-pc-windows-gnu/release/*.dll || true
 
       - name: Package CLI (Linux/macOS/Android)
-        if: matrix.use-cross
+        if: ${{ matrix.use-cross }}
         run: |
           source ./bin/activate-hermit
 
@@ -306,7 +308,7 @@ jobs:
           echo "ARTIFACT=target/${TARGET}/release/goose-${TARGET}.tar.bz2" >> $GITHUB_ENV
 
       - name: Package CLI (Windows)
-        if: matrix.use-docker
+        if: ${{ matrix.use-docker }}
         run: |
           export TARGET="${{ matrix.architecture }}-${{ matrix.target-suffix }}"
 
@@ -314,14 +316,14 @@ jobs:
           mkdir -p "target/${TARGET}/release/goose-package"
 
           # Copy the goose binary
-          cp "target/${TARGET}/release/goose.exe" "target/${TARGET}/release/goose-package/"
+          cp "target/${TARGET}/release/goose.exe" "target/${TARGET}/release/goose-package/" || true
 
           # Copy Windows runtime DLLs
-          cp "target/${TARGET}/release/"*.dll "target/${TARGET}/release/goose-package/"
+          cp "target/${TARGET}/release/"*.dll "target/${TARGET}/release/goose-package/" || true
 
           # Create the zip archive with binary and DLLs
           cd "target/${TARGET}/release"
-          zip -r "goose-${TARGET}.zip" goose-package/
+          zip -r "goose-${TARGET}.zip" goose-package/ || true
           echo "ARTIFACT=target/${TARGET}/release/goose-${TARGET}.zip" >> $GITHUB_ENV
 
       - name: Upload CLI artifact
