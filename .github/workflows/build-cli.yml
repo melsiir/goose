@@ -1,12 +1,8 @@
-# This is a **reuseable** workflow that builds the CLI for multiple platforms.
-# It doesn't get triggered on its own. It gets used in multiple workflows:
+# Reusable workflow that builds the CLI for multiple platforms
+# Used by:
 #  - release.yml
 #  - canary.yml
-#
-# Platform Build Strategy:
-#  - Linux: Uses Ubuntu runner with cross-compilation
-#  - macOS: Uses macOS runner with cross-compilation
-#  - Windows: Uses Ubuntu runner with Docker cross-compilation (same as desktop build)
+
 on:
   workflow_call:
     inputs:
@@ -29,307 +25,185 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux builds
-          - os: ubuntu-latest
-            architecture: aarch64
-            target-suffix: unknown-linux-musl
-            build-on: ubuntu-latest
-            use-cross: true
-          - os: ubuntu-latest
-            architecture: armv7
-            target-suffix: unknown-linux-gnueabihf
-            build-on: ubuntu-latest
-            use-cross: true
-          - os: ubuntu-latest
-            architecture: armv7
-            target-suffix: unknown-linux-musleabihf
-            build-on: ubuntu-latest
-            use-cross: true
-          - os: ubuntu-latest
+          # =====================
+          # Linux (glibc)
+          # =====================
+          - os: linux
             architecture: x86_64
-            target-suffix: unknown-linux-gnu
+            target: x86_64-unknown-linux-gnu
             build-on: ubuntu-latest
             use-cross: true
             cc: gcc-10
-          - os: ubuntu-latest
+
+          - os: linux
             architecture: aarch64
-            target-suffix: unknown-linux-gnu
+            target: aarch64-unknown-linux-gnu
             build-on: ubuntu-latest
             use-cross: true
             cc: gcc-10
-          # Android/Termux builds
-          - os: ubuntu-latest
-            architecture: aarch64
-            target-suffix: android
-            build-on: ubuntu-latest
-            use-cross: true
-          - os: ubuntu-latest
-            architecture: armv7
-            target-suffix: androideabi
-            build-on: ubuntu-latest
-            use-cross: true
-          # macOS builds
-          - os: macos-latest
+
+          # =====================
+          # macOS
+          # =====================
+          - os: macos
             architecture: x86_64
-            target-suffix: apple-darwin
+            target: x86_64-apple-darwin
             build-on: macos-latest
             use-cross: true
-          - os: macos-latest
+
+          - os: macos
             architecture: aarch64
-            target-suffix: apple-darwin
+            target: aarch64-apple-darwin
             build-on: macos-latest
             use-cross: true
-          # Windows builds (only x86_64 supported)
+
+          # =====================
+          # Windows (GNU)
+          # =====================
           - os: windows
             architecture: x86_64
-            target-suffix: pc-windows-gnu
+            target: x86_64-pc-windows-gnu
             build-on: ubuntu-latest
-            use-cross: false
             use-docker: true
 
+          # =====================
+          # Termux / Android
+          # =====================
+          - os: android
+            architecture: aarch64
+            target: aarch64-linux-android
+            build-on: ubuntu-latest
+            use-android: true
+
     steps:
+      # ---------------------
+      # Checkout
+      # ---------------------
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          # If inputs.ref is empty, fall back to the current github.ref
-          ref: ${{ inputs.ref != '' && inputs.ref || github.ref }}
+          ref: ${{ inputs.ref }}
           fetch-depth: 0
 
+      # ---------------------
+      # Version override
+      # ---------------------
       - name: Update version in Cargo.toml
         if: ${{ inputs.version != '' }}
         run: |
           sed -i.bak 's/^version = ".*"/version = "'${{ inputs.version }}'"/' Cargo.toml
           rm -f Cargo.toml.bak
 
-      - name: Install prerequisites
-        shell: bash
-        run: |
-          # Construct the target triple correctly for Android
-          if [[ "${{ matrix.target-suffix }}" == "android" ]]; then
-            export TARGET="${{ matrix.architecture }}-linux-${{ matrix.target-suffix }}"
-          elif [[ "${{ matrix.target-suffix }}" == "androideabi" ]]; then
-            export TARGET="${{ matrix.architecture }}-linux-${{ matrix.target-suffix }}"
-          else
-            export TARGET="${{ matrix.architecture }}-${{ matrix.target-suffix }}"
-          fi
-
-          case ${TARGET} in
-            arm-unknown-linux-*) sudo apt-get -y update ; sudo apt-get -y install gcc-arm-linux-gnueabihf ;;
-            aarch64-linux-android) sudo apt-get -y update ; sudo apt-get -y install gcc-aarch64-linux-android ;;
-            armv7-linux-androideabi) sudo apt-get -y update ; sudo apt-get -y install gcc-arm-linux-gnueabihf ;;
-            x86_64-linux-android) sudo apt-get -y update ; sudo apt-get -y install gcc-x86-64-linux-android ;;
-          esac
-
-          # Install Android NDK dependencies if building for Android
-          if [[ "${TARGET}" == *"android"* ]]; then
-            echo "Installing Android NDK dependencies..."
-            sudo apt-get -y install android-tools-adb android-ndk
-          fi
-
+      # ---------------------
+      # Install cross (Linux/macOS)
+      # ---------------------
       - name: Install cross
-        if: ${{ matrix.use-cross }}
-        run: source ./bin/activate-hermit && cargo install cross --git https://github.com/cross-rs/cross
-
-      - name: Cache Cargo artifacts (Linux/macOS)
-        if: ${{ matrix.use-cross }}
-        uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2
-        with:
-          key: ${{ matrix.architecture }}-${{ matrix.target-suffix }}
-
-      - name: Cache Cargo artifacts (Windows)
-        if: ${{ matrix.use-docker }}
-        uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2
-        with:
-          key: ${{ matrix.architecture }}-${{ matrix.target-suffix }}
-
-      - name: Build CLI (Linux/macOS/Android)
-        if: ${{ matrix.use-cross }}
-        env:
-          CROSS_NO_WARNINGS: 0
-          RUST_LOG: debug
-          RUST_BACKTRACE: 1
-          CROSS_VERBOSE: 1
+        if: matrix.use-cross
         run: |
           source ./bin/activate-hermit
+          cargo install cross --git https://github.com/cross-rs/cross
 
-          # Construct the target triple correctly for Android
-          if [[ "${{ matrix.target-suffix }}" == "android" ]]; then
-            export TARGET="${{ matrix.architecture }}-linux-${{ matrix.target-suffix }}"
-          elif [[ "${{ matrix.target-suffix }}" == "androideabi" ]]; then
-            export TARGET="${{ matrix.architecture }}-linux-${{ matrix.target-suffix }}"
-          else
-            export TARGET="${{ matrix.architecture }}-${{ matrix.target-suffix }}"
-          fi
+      # ---------------------
+      # Cache Rust
+      # ---------------------
+      - name: Cache Cargo artifacts
+        if: matrix.use-cross || matrix.use-docker
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
 
-          rustup target add "${TARGET}"
-          echo "Building for target: ${TARGET}"
-          echo "Rust toolchain info:"
-          rustup show
-          echo "Cross version:"
-          cross --version
-
-          # Install additional dependencies for bindgen if needed
-          if [[ "${TARGET}" == *"android"* ]]; then
-            echo "Installing Android NDK dependencies for bindgen..."
-            rustup component add rust-src
-          fi
-
-          export CC="${{ matrix.cc || '' }}"
-          cross build --release --target ${TARGET} -p goose-cli
-
-      - name: Build CLI (Windows)
-        if: ${{ matrix.use-docker }}
+      # =====================
+      # Linux / macOS build
+      # =====================
+      - name: Build CLI (Linux / macOS)
+        if: matrix.use-cross
+        env:
+          CC: ${{ matrix.cc || '' }}
         run: |
-          echo "Building Windows CLI executable with enhanced GitHub Actions caching..."
+          source ./bin/activate-hermit
+          rustup target add ${{ matrix.target }}
+          cross build --release --target ${{ matrix.target }} -p goose-cli
 
-          # Create cache directories
-          mkdir -p ~/.cargo/registry ~/.cargo/git
-
-          # Use enhanced caching with GitHub Actions cache mounts
+      # =====================
+      # Windows build
+      # =====================
+      - name: Build CLI (Windows)
+        if: matrix.use-docker
+        run: |
           docker run --rm \
-            -v "$(pwd)":/usr/src/myapp \
-            -v "$HOME/.cargo/registry":/usr/local/cargo/registry \
-            -v "$HOME/.cargo/git":/usr/local/cargo/git \
-            -w /usr/src/myapp \
+            -v "$(pwd)":/app \
+            -w /app \
             rust:latest \
             bash -c "
               set -e
-              echo '=== Setting up Rust environment with caching ==='
-              export CARGO_HOME=/usr/local/cargo
-              export PATH=/usr/local/cargo/bin:\$PATH
-
-              # Check if Windows target is already installed in cache
-              if rustup target list --installed | grep -q x86_64-pc-windows-gnu; then
-                echo '[OK] Windows cross-compilation target already installed'
-              else
-                echo '[INFO] Installing Windows cross-compilation target...'
-                rustup target add x86_64-pc-windows-gnu
-              fi
-
-              echo '=== Setting up build dependencies ==='
+              rustup target add ${{ matrix.target }}
               apt-get update
-              apt-get install -y mingw-w64 protobuf-compiler cmake time zip
-
-              echo '=== Setting up cross-compilation environment ==='
-              export CC_x86_64_pc_windows_gnu=x86_64-w64-mingw32-gcc
-              export CXX_x86_64_pc_windows_gnu=x86_64-w64-mingw32-g++
-              export AR_x86_64_pc_windows_gnu=x86_64-w64-mingw32-ar
-              export CARGO_TARGET_X86_64_PC_WINDOWS_GNU_LINKER=x86_64-w64-mingw32-gcc
-              export PKG_CONFIG_ALLOW_CROSS=1
-              export PROTOC=/usr/bin/protoc
-
-              echo '=== Optimized Cargo configuration ==='
-              mkdir -p .cargo
-              echo '[build]' > .cargo/config.toml
-              echo 'jobs = 4' >> .cargo/config.toml
-              echo '' >> .cargo/config.toml
-              echo '[target.x86_64-pc-windows-gnu]' >> .cargo/config.toml
-              echo 'linker = \"x86_64-w64-mingw32-gcc\"' >> .cargo/config.toml
-              echo '' >> .cargo/config.toml
-              echo '[net]' >> .cargo/config.toml
-              echo 'git-fetch-with-cli = true' >> .cargo/config.toml
-              echo 'retry = 3' >> .cargo/config.toml
-              echo '' >> .cargo/config.toml
-              echo '[profile.release]' >> .cargo/config.toml
-              echo 'codegen-units = 1' >> .cargo/config.toml
-              echo 'lto = false' >> .cargo/config.toml
-              echo 'panic = \"abort\"' >> .cargo/config.toml
-              echo 'debug = false' >> .cargo/config.toml
-              echo 'opt-level = 2' >> .cargo/config.toml
-              echo '' >> .cargo/config.toml
-              echo '[registries.crates-io]' >> .cargo/config.toml
-              echo 'protocol = \"sparse\"' >> .cargo/config.toml
-
-              echo '=== Building with cached dependencies ==='
-              # Check if we have cached build artifacts
-              if [ -d target/x86_64-pc-windows-gnu/release/deps ] && [ "$(ls -A target/x86_64-pc-windows-gnu/release/deps)" ]; then
-                echo '[OK] Found cached build artifacts, performing incremental build...'
-                CARGO_INCREMENTAL=1
-              else
-                echo '[INFO] No cached artifacts found, performing full build...'
-                CARGO_INCREMENTAL=0
-              fi
-
-              echo '[INFO] Building Windows CLI executable...'
-              CARGO_INCREMENTAL=\$CARGO_INCREMENTAL \
-              CARGO_NET_RETRY=3 \
-              CARGO_HTTP_TIMEOUT=60 \
-              RUST_BACKTRACE=1 \
-              cargo build --release --target x86_64-pc-windows-gnu -p goose-cli --jobs 4
-
-              echo '=== Copying Windows runtime DLLs ==='
-              GCC_DIR=\$(ls -d /usr/lib/gcc/x86_64-w64-mingw32/*/ | head -n 1)
-              cp "\$GCC_DIR/libstdc++-6.dll" target/x86_64-pc-windows-gnu/release/
-              cp "\$GCC_DIR/libgcc_s_seh-1.dll" target/x86_64-pc-windows-gnu/release/
-              cp /usr/x86_64-w64-mingw32/lib/libwinpthread-1.dll target/x86_64-pc-windows-gnu/release/
-
-              echo '[OK] Build completed successfully!'
-              ls -la target/x86_64-pc-windows-gnu/release/
+              apt-get install -y mingw-w64 protobuf-compiler cmake
+              cargo build --release --target ${{ matrix.target }} -p goose-cli
             "
 
-          sudo chown -R $USER:$USER target/
-
-          # Verify build succeeded
-          if [ ! -f "./target/x86_64-pc-windows-gnu/release/goose.exe" ]; then
-            echo "ERROR: Windows CLI binary not found."
-            ls -la ./target/x86_64-pc-windows-gnu/release/ || echo "Release directory doesn't exist"
-            exit 1
-          fi
-
-          echo "Windows CLI binary found:"
-          ls -la ./target/x86_64-pc-windows-gnu/release/goose.exe
-
-          echo "Windows runtime DLLs:"
-          ls -la ./target/x86_64-pc-windows-gnu/release/*.dll || true
-
-      - name: Package CLI (Linux/macOS/Android)
-        if: ${{ matrix.use-cross }}
+      # =====================
+      # Android / Termux setup
+      # =====================
+      - name: Install Android NDK & cargo-ndk
+        if: matrix.use-android
         run: |
-          source ./bin/activate-hermit
+          sudo apt-get update
+          sudo apt-get install -y unzip wget
 
-          # Construct the target triple correctly for Android (same logic as build step)
-          if [[ "${{ matrix.target-suffix }}" == "android" ]]; then
-            export TARGET="${{ matrix.architecture }}-linux-${{ matrix.target-suffix }}"
-          elif [[ "${{ matrix.target-suffix }}" == "androideabi" ]]; then
-            export TARGET="${{ matrix.architecture }}-linux-${{ matrix.target-suffix }}"
-          else
-            export TARGET="${{ matrix.architecture }}-${{ matrix.target-suffix }}"
-          fi
+          wget https://dl.google.com/android/repository/android-ndk-r26d-linux.zip
+          unzip android-ndk-r26d-linux.zip
+          echo "ANDROID_NDK_HOME=$PWD/android-ndk-r26d" >> $GITHUB_ENV
 
-          # Create a directory for the package contents
-          mkdir -p "target/${TARGET}/release/goose-package"
+          rustup target add ${{ matrix.target }}
+          cargo install cargo-ndk
 
-          # Copy the goose binary
-          cp "target/${TARGET}/release/goose" "target/${TARGET}/release/goose-package/"
+      # =====================
+      # Android / Termux build
+      # =====================
+      - name: Build CLI (Termux / Android)
+        if: matrix.use-android
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
+        run: |
+          cargo ndk \
+            --target ${{ matrix.target }} \
+            --platform 24 \
+            build --release -p goose-cli
 
-          # Create the tar archive
-          cd "target/${TARGET}/release"
-          tar -cjf "goose-${TARGET}.tar.bz2" -C goose-package .
-          echo "ARTIFACT=target/${TARGET}/release/goose-${TARGET}.tar.bz2" >> $GITHUB_ENV
+      # =====================
+      # Packaging (Unix)
+      # =====================
+      - name: Package CLI (Linux / macOS / Android)
+        if: matrix.use-cross || matrix.use-android
+        run: |
+          mkdir -p target/${{ matrix.target }}/release/goose-package
+          cp target/${{ matrix.target }}/release/goose \
+             target/${{ matrix.target }}/release/goose-package/
 
+          cd target/${{ matrix.target }}/release
+          tar -cjf goose-${{ matrix.target }}.tar.bz2 -C goose-package .
+          echo "ARTIFACT=target/${{ matrix.target }}/release/goose-${{ matrix.target }}.tar.bz2" >> $GITHUB_ENV
+
+      # =====================
+      # Packaging (Windows)
+      # =====================
       - name: Package CLI (Windows)
-        if: ${{ matrix.use-docker }}
+        if: matrix.use-docker
         run: |
-          export TARGET="${{ matrix.architecture }}-${{ matrix.target-suffix }}"
+          mkdir -p target/${{ matrix.target }}/release/goose-package
+          cp target/${{ matrix.target }}/release/goose.exe \
+             target/${{ matrix.target }}/release/goose-package/
 
-          # Create a directory for the package contents
-          mkdir -p "target/${TARGET}/release/goose-package"
+          cd target/${{ matrix.target }}/release
+          zip -r goose-${{ matrix.target }}.zip goose-package
+          echo "ARTIFACT=target/${{ matrix.target }}/release/goose-${{ matrix.target }}.zip" >> $GITHUB_ENV
 
-          # Copy the goose binary
-          cp "target/${TARGET}/release/goose.exe" "target/${TARGET}/release/goose-package/" || true
-
-          # Copy Windows runtime DLLs
-          cp "target/${TARGET}/release/"*.dll "target/${TARGET}/release/goose-package/" || true
-
-          # Create the zip archive with binary and DLLs
-          cd "target/${TARGET}/release"
-          zip -r "goose-${TARGET}.zip" goose-package/ || true
-          echo "ARTIFACT=target/${TARGET}/release/goose-${TARGET}.zip" >> $GITHUB_ENV
-
+      # ---------------------
+      # Upload artifact
+      # ---------------------
       - name: Upload CLI artifact
-        uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # pin@v4
+        uses: actions/upload-artifact@v4
         with:
-          name: goose-${{ matrix.architecture }}-${{ matrix.target-suffix }}
+          name: goose-${{ matrix.target }}
           path: ${{ env.ARTIFACT }}
-
-      # end
