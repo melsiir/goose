@@ -97,8 +97,18 @@ jobs:
         with:
           key: ${{ matrix.architecture }}-${{ matrix.target-suffix }}
 
+      - name: Build CLI (musl)
+        if: matrix.target-suffix == 'unknown-linux-musl'
+        env:
+          CROSS_NO_WARNINGS: 0
+        run: |
+          source ./bin/activate-hermit
+          TARGET="${{ matrix.architecture }}-${{ matrix.target-suffix }}"
+          rustup target add "$TARGET"
+          cross build --release --target "$TARGET" -p goose-cli --no-default-features
+          
       - name: Build CLI (Linux/macOS)
-        if: matrix.use-cross
+        if: matrix.target-suffix == 'unknown-linux-musl'
         env:
           CROSS_NO_WARNINGS: 0
           RUST_LOG: debug
@@ -117,15 +127,7 @@ jobs:
           export CC="${{ matrix.cc || ''}}"
           cross build --release --target ${TARGET} -p goose-cli
           
-      - name: Build CLI (musl)
-        if: matrix.target-suffix == 'unknown-linux-musl'
-        env:
-          CROSS_NO_WARNINGS: 0
-        run: |
-          source ./bin/activate-hermit
-          TARGET="${{ matrix.architecture }}-${{ matrix.target-suffix }}"
-          rustup target add "$TARGET"
-          cross build --release --target "$TARGET" -p goose-cli --no-default-features
+      
           
       - name: Build CLI (Windows)
         if: matrix.use-docker
