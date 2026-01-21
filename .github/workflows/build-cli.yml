@@ -48,7 +48,7 @@ jobs:
             target-suffix: unknown-linux-musl
             build-on: ubuntu-latest
             use-cross: true
-            cc: gcc-10
+            
           # macOS builds
           - os: macos-latest
             architecture: x86_64
