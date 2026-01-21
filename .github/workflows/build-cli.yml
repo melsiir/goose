@@ -290,12 +290,12 @@ jobs:
               echo '=== Writing cargo config for cross linker ==='
               mkdir -p .cargo
               cat > .cargo/config.toml <<EOF
-[build]
-jobs = 4
+              [build]
+              jobs = 4
 
-[target.\$TARGET]
-linker = \"\$LINKER\"
-EOF
+              [target.\$TARGET]
+              linker = \"\$LINKER\"
+              EOF
 
               echo '=== Building with cargo ==='
               CARGO_NET_RETRY=3 \
