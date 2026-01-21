@@ -7,6 +7,7 @@
 #  - Linux: Uses Ubuntu runner with cross-compilation
 #  - macOS: Uses macOS runner with cross-compilation
 #  - Windows: Uses Ubuntu runner with Docker cross-compilation (same as desktop build)
+#  - Termux (Android): Uses Ubuntu runner with Docker + Android NDK cross-compilation
 on:
   workflow_call:
     inputs:
@@ -60,6 +61,23 @@ jobs:
             build-on: ubuntu-latest
             use-cross: false
             use-docker: true
+          # Termux (Android) builds
+          - os: termux
+            architecture: aarch64
+            target-suffix: linux-android
+            build-on: ubuntu-latest
+            use-cross: false
+            use-docker: true
+            termux: true
+            android-api: 21
+          - os: termux
+            architecture: armv7
+            target-suffix: linux-androideabi
+            build-on: ubuntu-latest
+            use-cross: false
+            use-docker: true
+            termux: true
+            android-api: 21
 
     steps:
       - name: Checkout code
@@ -84,7 +102,7 @@ jobs:
         with:
           key: ${{ matrix.architecture }}-${{ matrix.target-suffix }}
 
-      - name: Cache Cargo artifacts (Windows)
+      - name: Cache Cargo artifacts (Windows/Termux)
         if: matrix.use-docker
         uses: Swatinem/rust-cache@98c8021b550208e191a6a3145459bfc9fb29c4c0 # v2
         with:
@@ -111,7 +129,7 @@ jobs:
           cross build --release --target ${TARGET} -p goose-cli
 
       - name: Build CLI (Windows)
-        if: matrix.use-docker
+        if: matrix.use-docker && !matrix.termux
         run: |
           echo "🚀 Building Windows CLI executable with enhanced GitHub Actions caching..."
 
@@ -215,6 +233,93 @@ jobs:
           echo "✅ Windows runtime DLLs:"
           ls -la ./target/x86_64-pc-windows-gnu/release/*.dll
 
+      - name: Build CLI (Termux/Android)
+        if: matrix.use-docker && matrix.termux
+        run: |
+          echo "🚀 Building Termux (Android) CLI executable with Android NDK inside Docker..."
+
+          # Create cache directories
+          mkdir -p ~/.cargo/registry ~/.cargo/git
+
+          # Use Docker to run the build inside a reproducible environment with NDK
+          docker run --rm \
+            -v "$(pwd)":/usr/src/myapp \
+            -v "$HOME/.cargo/registry":/usr/local/cargo/registry \
+            -v "$HOME/.cargo/git":/usr/local/cargo/git \
+            -w /usr/src/myapp \
+            rust:latest \
+            bash -c "
+              set -e
+              echo '=== Setting up Rust environment with caching ==='
+              export CARGO_HOME=/usr/local/cargo
+              export PATH=/usr/local/cargo/bin:\$PATH
+
+              TARGET='${{ matrix.architecture }}-${{ matrix.target-suffix }}'
+              ANDROID_API=${{ matrix.android-api }}
+
+              echo 'Target: ' \$TARGET
+              echo 'Android API level: ' \$ANDROID_API
+
+              echo '=== Installing prerequisites ==='
+              apt-get update
+              apt-get install -y wget unzip clang make cmake pkg-config git
+
+              echo '=== Downloading Android NDK ==='
+              # pinned to a recent NDK that provides clang-based toolchains
+              NDK_VERSION=r25b
+              wget -q https://dl.google.com/android/repository/android-ndk-\${NDK_VERSION}-linux.zip -O /tmp/ndk.zip
+              unzip -q /tmp/ndk.zip -d /opt
+              NDK_DIR=/opt/android-ndk-\${NDK_VERSION}
+              export PATH=\${NDK_DIR}/toolchains/llvm/prebuilt/linux-x86_64/bin:\$PATH
+
+              echo '=== Configuring linker for target ==='
+              if [ \"\$TARGET\" = 'aarch64-linux-android' ]; then
+                LINKER=aarch64-linux-android\${ANDROID_API}-clang
+              elif [ \"\$TARGET\" = 'armv7-linux-androideabi' ]; then
+                LINKER=armv7a-linux-androideabi\${ANDROID_API}-clang
+              else
+                echo 'Unsupported Termux target:' \$TARGET
+                exit 1
+              fi
+
+              echo 'Using linker:' \$LINKER
+
+              echo '=== Adding Rust target ==='
+              rustup target add \$TARGET
+
+              echo '=== Writing cargo config for cross linker ==='
+              mkdir -p .cargo
+              cat > .cargo/config.toml <<EOF
+[build]
+jobs = 4
+
+[target.\$TARGET]
+linker = \"\$LINKER\"
+EOF
+
+              echo '=== Building with cargo ==='
+              CARGO_NET_RETRY=3 \
+              CARGO_HTTP_TIMEOUT=60 \
+              RUST_BACKTRACE=1 \
+              cargo build --release --target \$TARGET -p goose-cli --jobs 4
+
+              echo '✅ Build completed for' \$TARGET
+              ls -la target/\$TARGET/release/
+            "
+
+          sudo chown -R $USER:$USER target/
+
+          # Verify build succeeded (either goose or goose.exe depending on target)
+          TARGET="${{ matrix.architecture }}-${{ matrix.target-suffix }}"
+          if [ ! -f "./target/${TARGET}/release/goose" ]; then
+            echo "❌ Termux CLI binary not found for ${TARGET}."
+            ls -la "./target/${TARGET}/release/" || echo "Release directory doesn't exist"
+            exit 1
+          fi
+
+          echo "✅ Termux CLI binary found for ${TARGET}!"
+          ls -la "./target/${TARGET}/release/goose"
+
       - name: Package CLI (Linux/macOS)
         if: matrix.use-cross
         run: |
@@ -233,7 +338,7 @@ jobs:
           echo "ARTIFACT=target/${TARGET}/release/goose-${TARGET}.tar.bz2" >> $GITHUB_ENV
 
       - name: Package CLI (Windows)
-        if: matrix.use-docker
+        if: matrix.use-docker && !matrix.termux
         run: |
           export TARGET="${{ matrix.architecture }}-${{ matrix.target-suffix }}"
 
@@ -250,6 +355,22 @@ jobs:
           cd "target/${TARGET}/release"
           zip -r "goose-${TARGET}.zip" goose-package/
           echo "ARTIFACT=target/${TARGET}/release/goose-${TARGET}.zip" >> $GITHUB_ENV
+
+      - name: Package CLI (Termux/Android)
+        if: matrix.use-docker && matrix.termux
+        run: |
+          export TARGET="${{ matrix.architecture }}-${{ matrix.target-suffix }}"
+
+          # Create a directory for the package contents
+          mkdir -p "target/${TARGET}/release/goose-package"
+
+          # Copy the goose binary
+          cp "target/${TARGET}/release/goose" "target/${TARGET}/release/goose-package/"
+
+          # Note: Termux users usually place executables in $PREFIX/bin; provide a tar.gz
+          cd "target/${TARGET}/release"
+          tar -czf "goose-${TARGET}.tar.gz" -C goose-package .
+          echo "ARTIFACT=target/${TARGET}/release/goose-${TARGET}.tar.gz" >> $GITHUB_ENV
 
       - name: Upload CLI artifact
         uses: actions/upload-artifact@4cec3d8aa04e39d1a68397de0c4cd6fb9dce8ec1 # pin@v4
